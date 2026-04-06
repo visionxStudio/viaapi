@@ -72,18 +72,24 @@ def get_audio_info(video_id: str):
         with yt_dlp.YoutubeDL(retry_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
+    # Build a candidate list even when yt-dlp returns a single format dict.
+    formats = info.get("formats") or info.get("requested_formats") or []
+    if not formats and info.get("url"):
+        formats = [info]
+
+    def has_audio(fmt: dict) -> bool:
+        acodec = fmt.get("acodec")
+        return acodec is None or acodec != "none"
+
     # Prefer audio-only formats; if none exist, fall back to any format with audio.
     audio_formats = [
-        f for f in info.get("formats", [])
-        if f.get("acodec") != "none" and f.get("vcodec") == "none"
+        f for f in formats
+        if has_audio(f) and f.get("vcodec") == "none"
     ]
     if not audio_formats:
-        audio_formats = [
-            f for f in info.get("formats", [])
-            if f.get("acodec") != "none"
-        ]
+        audio_formats = [f for f in formats if has_audio(f)]
     if not audio_formats:
-        raise Exception("No audio-only streams found")
+        raise Exception("No streams with audio found")
 
     best_audio = sorted(audio_formats, key=lambda x: x.get("abr") or 0, reverse=True)[0]
 
@@ -291,7 +297,7 @@ def list_formats():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok good"})
+    return jsonify({"status": "ok good friend"})
 
 
 if __name__ == "__main__":
