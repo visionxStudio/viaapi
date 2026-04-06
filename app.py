@@ -5,6 +5,7 @@ from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 import yt_dlp
 import requests
+from pytubefix import YouTube
 
 # -------------------- CONFIG --------------------
 app = Flask(__name__)
@@ -32,12 +33,10 @@ def get_audio_info(video_id: str):
     """
     url = build_url(video_id)
     cookies_present = os.path.exists(COOKIES_PATH)
-    if cookies_present:
-        logger.info("Using cookies file at %s", COOKIES_PATH)
-    else:
+    if not cookies_present:
         logger.warning("cookies.txt not found at %s", COOKIES_PATH)
 
-    ydl_opts = {
+    base_opts = {
         # Avoid hard-failing when m4a isn't available for a given video.
         "format": "bestaudio/best",
         "quiet": True,
@@ -47,7 +46,6 @@ def get_audio_info(video_id: str):
         "allow_unplayable_formats": True,
         "noplaylist": True,
         "skip_download": True,
-        "cookiefile": COOKIES_PATH if cookies_present else None,
         "extractor_args": {
             "youtube": {
                 "player_client": ["web", "android", "ios", "mweb"],
@@ -58,19 +56,45 @@ def get_audio_info(video_id: str):
         },
     }
 
+    def extract_with_opts(opts: dict) -> dict:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=False)
+
+    def should_retry_with_cookies(err: Exception) -> bool:
+        msg = str(err)
+        return any(s in msg for s in [
+            "Sign in to confirm you’re not a bot",
+            "Sign in to confirm you're not a bot",
+            "cookies",
+            "login",
+            "consent",
+            "Requested format is not available",
+        ])
+
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        info = extract_with_opts(dict(base_opts))
+        cookies_used = False
     except Exception as e:
-        # Some environments still throw "Requested format is not available".
-        # Retry with a generic format to avoid hard failure.
-        if "Requested format is not available" not in str(e):
-            raise
-        retry_opts = dict(ydl_opts)
-        retry_opts.pop("format", None)
+        if not cookies_present or not should_retry_with_cookies(e):
+            # Fall back to pytubefix if yt-dlp fails
+            return get_audio_info_pytube(video_id)
+        logger.info("Retrying extraction with cookies")
+        cookie_opts = dict(base_opts)
+        cookie_opts["cookiefile"] = COOKIES_PATH
+        try:
+            info = extract_with_opts(cookie_opts)
+            cookies_used = True
+        except Exception:
+            return get_audio_info_pytube(video_id)
+
+    # Fallback retry if format selection still fails
+    if not info:
+        retry_opts = dict(base_opts)
         retry_opts["format"] = "best"
-        with yt_dlp.YoutubeDL(retry_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+        try:
+            info = extract_with_opts(retry_opts)
+        except Exception:
+            return get_audio_info_pytube(video_id)
 
     # Build a candidate list even when yt-dlp returns a single format dict.
     formats = []
@@ -105,7 +129,48 @@ def get_audio_info(video_id: str):
         "title": info.get("title"),
         "stream_url": best_audio.get("url"),
         "ext": best_audio.get("ext"),
-        "abr": best_audio.get("abr")
+        "abr": best_audio.get("abr"),
+        "source": "yt-dlp",
+        "cookies_used": cookies_used,
+    }
+
+def get_audio_info_pytube(video_id: str):
+    """
+    Fallback extraction using pytubefix.
+    Tries PO tokens first, then without.
+    """
+    url = build_url(video_id)
+
+    def try_pytube(use_po_token: bool):
+        return YouTube(
+            url,
+            use_po_token=use_po_token,
+            client="WEB",
+        )
+
+    yt = None
+    use_po = True
+    try:
+        yt = try_pytube(True)
+    except Exception:
+        use_po = False
+        yt = try_pytube(False)
+
+    streams = yt.streams.filter(only_audio=True)
+    stream = streams.order_by("abr").desc().first()
+    if stream is None:
+        stream = yt.streams.filter(adaptive=True, mime_type="audio/webm").first()
+    if stream is None:
+        raise Exception("No audio streams found (pytubefix fallback)")
+
+    return {
+        "video_id": video_id,
+        "title": yt.title,
+        "stream_url": stream.url,
+        "ext": (stream.subtype or "webm"),
+        "abr": getattr(stream, "abr", None),
+        "source": "pytubefix",
+        "po_token_used": use_po,
     }
 
 # -------------------- API ENDPOINTS --------------------
