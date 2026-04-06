@@ -291,7 +291,7 @@ def list_formats():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok good"})
 
 
 if __name__ == "__main__":
