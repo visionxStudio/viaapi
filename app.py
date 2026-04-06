@@ -73,9 +73,16 @@ def get_audio_info(video_id: str):
             info = ydl.extract_info(url, download=False)
 
     # Build a candidate list even when yt-dlp returns a single format dict.
-    formats = info.get("formats") or info.get("requested_formats") or []
-    if not formats and info.get("url"):
-        formats = [info]
+    formats = []
+    if isinstance(info, dict):
+        if info.get("requested_formats"):
+            formats = info.get("requested_formats") or []
+        elif info.get("requested_downloads"):
+            formats = info.get("requested_downloads") or []
+        elif info.get("formats"):
+            formats = info.get("formats") or []
+        elif info.get("url"):
+            formats = [info]
 
     def has_audio(fmt: dict) -> bool:
         acodec = fmt.get("acodec")
