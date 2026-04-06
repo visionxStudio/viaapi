@@ -43,6 +43,8 @@ def get_audio_info(video_id: str):
         "quiet": True,
         "no_warnings": True,
         "ignoreconfig": True,
+        "ignore_no_formats_error": True,
+        "allow_unplayable_formats": True,
         "noplaylist": True,
         "skip_download": True,
         "cookiefile": COOKIES_PATH if cookies_present else None,
@@ -56,8 +58,19 @@ def get_audio_info(video_id: str):
         },
     }
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as e:
+        # Some environments still throw "Requested format is not available".
+        # Retry with a generic format to avoid hard failure.
+        if "Requested format is not available" not in str(e):
+            raise
+        retry_opts = dict(ydl_opts)
+        retry_opts.pop("format", None)
+        retry_opts["format"] = "best"
+        with yt_dlp.YoutubeDL(retry_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
 
     # Prefer audio-only formats; if none exist, fall back to any format with audio.
     audio_formats = [
